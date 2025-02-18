@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # Network settings
 export PORT="${PORT:-5001}"
-export HOST="${HOST:-"0.0.0.0"}"
+export HOST="${HOST:-"127.0.0.1"}"
 
 # Performance settings
 UVICORN_WORKERS="${UVICORN_WORKERS:-1}"

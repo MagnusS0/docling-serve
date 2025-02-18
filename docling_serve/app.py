@@ -9,7 +9,7 @@ from typing import Annotated, Any, Dict, List, Optional, Union
 from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.document_converter import DocumentConverter
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, UploadFile
+from fastapi import BackgroundTasks, FastAPI, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -18,12 +18,19 @@ from docling_serve.docling_conversion import (
     ConvertDocumentFileSourcesRequest,
     ConvertDocumentsOptions,
     ConvertDocumentsRequest,
+    ConvertChunkedDocumentRequest,
     convert_documents,
+    convert_documents_for_chunking,
     converters,
     get_pdf_pipeline_opts,
 )
 from docling_serve.helper_functions import FormDepends, _str_to_bool
-from docling_serve.response_preparation import ConvertDocumentResponse, process_results
+from docling_serve.response_preparation import (
+    ConvertDocumentResponse,
+    process_results,
+    ChunkedDocumentResponse,
+    process_chunked_results,
+)
 
 # Load local env vars if present
 load_dotenv()
@@ -221,4 +228,75 @@ async def process_file(
         conv_results=results,
     )
 
+    return response
+
+# Convert a document to chunked output from URL(s)
+@app.post(
+    "/v1alpha/convert/chunked/source",
+    response_model=ChunkedDocumentResponse,
+)
+def process_chunked_url(
+    background_tasks: BackgroundTasks, conversion_request: ConvertChunkedDocumentRequest
+):
+    """Endpoint to process URLs, convert documents and return chunked output."""
+    sources: List[Union[str, DocumentStream]] = []
+    headers: Optional[Dict[str, Any]] = None
+
+    if conversion_request.http_sources: # Ensure http_sources is not None
+        for http_source in conversion_request.http_sources:
+            sources.append(http_source.url)
+            if headers is None and http_source.headers:
+                headers = http_source.headers
+    elif conversion_request.file_sources: # Fallback to file_sources if http_sources is not provided for flexibility
+        for file_source in conversion_request.file_sources:
+            sources.append(file_source.to_document_stream())
+
+    if not sources:
+        raise HTTPException(status_code=400, detail="No document sources provided.")
+
+
+    results = convert_documents_for_chunking( # Use dedicated chunking conversion
+        sources=sources, options=conversion_request.options, headers=headers
+    )
+
+    response = process_chunked_results( # Use dedicated chunked results processor
+        background_tasks=background_tasks,
+        conversion_options=conversion_request.options,
+        conv_results=results,
+        report_id=conversion_request.report_id # Pass report_id
+    )
+    return response
+
+
+# Convert a document to chunked output from file(s)
+@app.post(
+    "/v1alpha/convert/chunked/file",
+    response_model=ChunkedDocumentResponse,
+)
+async def process_chunked_file(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile],
+    report_id: str, # Ensure report_id is passed here as well
+    options: Annotated[ConvertDocumentsOptions, FormDepends(ConvertDocumentsOptions)],
+):
+    """Endpoint to process file uploads, convert documents and return chunked output."""
+
+    _log.info(f"Received {len(files)} files for chunked processing.")
+
+    file_sources = []
+    for file in files:
+        buf = BytesIO(file.file.read())
+        name = file.filename if file.filename else "file.pdf"
+        file_sources.append(DocumentStream(name=name, stream=buf))
+
+    results = convert_documents_for_chunking( # Use dedicated chunking conversion
+        sources=file_sources, options=options
+    )
+
+    response = process_chunked_results( # Use dedicated chunked results processor
+        background_tasks=background_tasks,
+        conversion_options=options,
+        conv_results=results,
+        report_id=report_id # Pass report_id
+    )
     return response

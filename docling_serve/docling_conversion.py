@@ -209,6 +209,17 @@ class ConvertDocumentsOptions(BaseModel):
         ),
     ] = 2.0
 
+    chunking_tokenizer: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Tokenizer to use for chunking, from Hugging Face Transformers."
+                "String. Optional, defaults to BAAI/bge-small-en-v1.5"
+            ),
+            examples=["BAAI/bge-small-en-v1.5"],
+        ),
+    ] = "BAAI/bge-small-en-v1.5"
+
 
 class DocumentsConvertBase(BaseModel):
     options: ConvertDocumentsOptions = ConvertDocumentsOptions()
@@ -256,6 +267,17 @@ class ConvertDocumentHttpSourcesRequest(DocumentsConvertBase):
 
 class ConvertDocumentFileSourcesRequest(DocumentsConvertBase):
     file_sources: List[FileSource]
+
+class ConvertChunkedDocumentRequest(DocumentsConvertBase):
+    http_sources: Optional[List[HttpSource]] = None
+    file_sources: Optional[List[FileSource]] = None
+    report_id: Annotated[
+        str,
+        Field(
+            description="Report ID to associate with chunks. Must be provided for chunked endpoint.",
+            examples=["report123"],
+        ),
+    ]
 
 
 ConvertDocumentsRequest = Union[
@@ -397,4 +419,32 @@ def convert_documents(
         headers=headers,
     )
 
+    return results
+
+def convert_documents_for_chunking(
+    sources: Iterable[Union[Path, str, DocumentStream]],
+    options: ConvertDocumentsOptions,
+    headers: Optional[Dict[str, Any]] = None,
+):
+    """Converts documents using Docling DocumentConverter, optimized for chunking (e.g. force json output)."""
+    # For chunking, we primarily need the JSON structure of the document.
+    # Force output to JSON to ensure the document structure is available for chunking.
+    chunking_options = options.model_copy(deep=True) # Create a copy to avoid modifying original options
+    chunking_options.to_formats = [OutputFormat.JSON] # Force JSON output
+
+    pdf_format_option, options_hash = get_pdf_pipeline_opts(chunking_options)
+
+    if options_hash not in converters:
+        format_options: Dict[InputFormat, FormatOption] = {
+            InputFormat.PDF: pdf_format_option,
+            InputFormat.IMAGE: pdf_format_option,
+        }
+        converters[options_hash] = DocumentConverter(format_options=format_options)
+        _log.info(f"We now have {len(converters)} converters in memory for chunking.")
+
+
+    results: Iterator[ConversionResult] = converters[options_hash].convert_all(
+        sources,
+        headers=headers,
+    )
     return results
